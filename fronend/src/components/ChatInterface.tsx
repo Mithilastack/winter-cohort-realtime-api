@@ -1,19 +1,21 @@
 import { useState, useEffect, useRef, type FormEvent } from "react";
 import { useSocket } from "../context/SocketContext";
-
-interface Message {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  isStreaming?: boolean;
-}
+import { useChatContext } from "../context/ChatContext";
 
 export default function ChatInterface() {
   const { socket, isConnected } = useSocket();
-  const [messages, setMessages] = useState<Message[]>([]);
+  const {
+    messages,
+    addMessage,
+    updateStreamingMessage,
+    clearCurrentChat,
+    isStreaming,
+    streamingContent,
+  } = useChatContext();
+
+  // Access the extended context to get finalizeStreamingMessage
+  const chatContext = useChatContext() as any;
   const [input, setInput] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [streamingContent, setStreamingContent] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -29,36 +31,31 @@ export default function ChatInterface() {
 
     // Listen for streaming chunks
     socket.on("chat-stream", (data: { content: string }) => {
-      setStreamingContent((prev) => prev + data.content);
+      updateStreamingMessage(streamingContent + data.content);
     });
 
     // Listen for completion
     socket.on("chat-complete", (data: { fullResponse: string }) => {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now().toString(),
+      // Use finalizeStreamingMessage to properly save the complete message
+      if (chatContext.finalizeStreamingMessage) {
+        chatContext.finalizeStreamingMessage(data.fullResponse);
+      } else {
+        addMessage({
           role: "assistant",
           content: data.fullResponse,
-        },
-      ]);
-      setStreamingContent("");
-      setIsLoading(false);
+        });
+      }
+      updateStreamingMessage(""); // Clear streaming content
     });
 
     // Listen for errors
     socket.on("chat-error", (data: { error: string }) => {
       console.error("Chat error:", data.error);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now().toString(),
-          role: "assistant",
-          content: `Error: ${data.error}`,
-        },
-      ]);
-      setStreamingContent("");
-      setIsLoading(false);
+      addMessage({
+        role: "assistant",
+        content: `Error: ${data.error}`,
+      });
+      updateStreamingMessage(""); // Clear streaming content
     });
 
     return () => {
@@ -66,27 +63,30 @@ export default function ChatInterface() {
       socket.off("chat-complete");
       socket.off("chat-error");
     };
-  }, [socket]);
+  }, [
+    socket,
+    streamingContent,
+    addMessage,
+    updateStreamingMessage,
+    chatContext,
+  ]);
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || !socket || !isConnected) return;
+    if (!input.trim() || !socket || !isConnected || isStreaming) return;
 
-    // Add user message to UI
-    const userMessage: Message = {
-      id: Date.now().toString(),
+    // Add user message via context
+    addMessage({
       role: "user",
       content: input.trim(),
-    };
-    setMessages((prev) => [...prev, userMessage]);
+    });
 
     // Emit to backend
     socket.emit("chat-message", { prompt: input.trim() });
 
-    // Reset input and set loading
+    // Reset input
     setInput("");
-    setIsLoading(true);
-    setStreamingContent("");
+    updateStreamingMessage(""); // Prepare for new streaming
   };
 
   return (
@@ -97,15 +97,27 @@ export default function ChatInterface() {
           <h1 className="text-2xl font-bold bg-linear-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
             AI Assistant
           </h1>
-          <div className="flex items-center gap-2">
-            <div
-              className={`w-2 h-2 rounded-full ${
-                isConnected ? "bg-green-400 animate-pulse" : "bg-red-400"
-              }`}
-            />
-            <span className="text-sm text-slate-300">
-              {isConnected ? "Connected" : "Disconnected"}
-            </span>
+          <div className="flex items-center gap-4">
+            {/* Clear Chat Button */}
+            {messages.length > 0 && (
+              <button
+                onClick={clearCurrentChat}
+                className="text-sm text-slate-400 hover:text-red-400 transition-colors px-3 py-1 rounded-lg hover:bg-red-500/10"
+              >
+                Clear Chat
+              </button>
+            )}
+            {/* Connection Status */}
+            <div className="flex items-center gap-2">
+              <div
+                className={`w-2 h-2 rounded-full ${
+                  isConnected ? "bg-green-400 animate-pulse" : "bg-red-400"
+                }`}
+              />
+              <span className="text-sm text-slate-300">
+                {isConnected ? "Connected" : "Disconnected"}
+              </span>
+            </div>
           </div>
         </div>
       </div>
@@ -179,15 +191,15 @@ export default function ChatInterface() {
                   ? "Type your message..."
                   : "Waiting for connection..."
               }
-              disabled={!isConnected || isLoading}
+              disabled={!isConnected || isStreaming}
               className="flex-1 bg-slate-900/50 border border-purple-500/30 rounded-2xl px-6 py-4 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
             />
             <button
               type="submit"
-              disabled={!isConnected || isLoading || !input.trim()}
+              disabled={!isConnected || isStreaming || !input.trim()}
               className="bg-linear-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white font-semibold px-8 py-4 rounded-2xl transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:shadow-purple-500/50"
             >
-              {isLoading ? (
+              {isStreaming ? (
                 <div className="flex items-center gap-2">
                   <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                   <span>Thinking...</span>
